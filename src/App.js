@@ -264,6 +264,9 @@ function App() {
         <h1>GitHub Actions to CNB Converter</h1>
         <p>Upload a GitHub Actions workflow file (.yml) to convert it to CNB format</p>
       </header>
+      <div className="early-stage-note">
+        该项目目前处于早期开发阶段，如果您遇到任何问题，请提交issue反馈。
+      </div>
       <main className="App-main">
         <div className="converter-container">
           <div className="file-upload">

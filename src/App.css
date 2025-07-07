@@ -217,3 +217,16 @@
     transform: rotate(360deg);
   }
 }
+
+.early-stage-note {
+  background-color: #fffbe6;
+  color: #b26a00;
+  border: 1px solid #ffe58f;
+  border-radius: 4px;
+  padding: 0.75rem 1.5rem;
+  margin: 1.5rem auto 0 auto;
+  max-width: 800px;
+  font-size: 1rem;
+  text-align: center;
+  box-shadow: 0 1px 4px rgba(255, 229, 143, 0.15);
+}
