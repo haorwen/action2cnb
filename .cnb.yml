@@ -1,0 +1,19 @@
+  push:
+    eo_deploy:
+      runner:
+        cpus: 32
+      stages:
+        - name: 构建
+          image: node:20-alpine
+          script:
+            # 这里是nextjs构建需要使用的命令
+            - npm i
+            - npm run build
+        - name: 部署到 eo pages
+          imports:
+            # 这里导入Edgeone的密钥，可在eopages控制台点击API Token新建
+            # 这里是cnb提供的导入变量功能，文件内容为 EO_SECRET: xxxxxxxxxxxxxxxxx
+            - https://cnb.cool/haorwen/secrets/-/blob/90d0a0ae8b7e9e9240b36079905429850b8182a0/env.yml
+          image: tencentcom/deploy-eopages:latest
+          # 这里需要使用您的EO_SECRET，在上面imports已经说明
+          script: edgeone pages deploy ./build -n action2cnb -t $EO_SECRET
