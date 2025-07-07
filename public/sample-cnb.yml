@@ -1,0 +1,102 @@
+# 使用YAML锚点和别名简化配置
+
+# 定义通用任务
+.checkout_task: &checkout_task
+  name: Checkout code
+  script: |
+    git clone $REPO_URL ./
+    git checkout $COMMIT_ID
+
+.node_setup: &node_setup
+  name: Setup Node.js
+  script: |
+    # Setup Node.js environment
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh | bash
+    export NVM_DIR="$HOME/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
+# 定义通用任务组
+.common_tasks: &common_tasks
+  - <<: *checkout_task
+  - name: Install dependencies
+    script: npm ci
+  - name: Run linter
+    script: npm run lint
+  - name: Run tests
+    script: npm test
+  - name: Build
+    script: npm run build
+
+# 定义通用运行时环境
+.node_runtime: &node_runtime
+  type: DOCKER
+  image: ubuntu:22.04
+
+# 定义构建阶段
+.build_stage: &build_stage
+  name: build
+  runtime: *node_runtime
+  tasks:
+    - <<: *checkout_task
+    - <<: *node_setup
+      script: |
+        # Setup Node.js environment
+        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh | bash
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        nvm install 16.x
+        nvm use 16.x
+    - name: Install dependencies
+      script: npm ci
+    - name: Run linter
+      script: npm run lint
+    - name: Run tests
+      script: npm test
+    - name: Build
+      script: npm run build
+
+# 定义部署阶段
+.deploy_stage: &deploy_stage
+  name: deploy
+  runtime: *node_runtime
+  tasks:
+    - <<: *checkout_task
+    - <<: *node_setup
+      script: |
+        # Setup Node.js environment
+        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh | bash
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        nvm install 18.x
+        nvm use 18.x
+    - name: Install dependencies
+      script: npm ci
+    - name: Build
+      script: npm run build
+    - name: Deploy to production
+      script: |
+        echo "Deploying to production server..."
+        npm run deploy
+
+# 定义流水线模板
+.build_pipeline: &build_pipeline
+  stages:
+    - <<: *build_stage
+
+.deploy_pipeline: &deploy_pipeline
+  stages:
+    - <<: *deploy_stage
+
+# 主配置
+main:
+  # push 事件触发的流水线
+  push:
+    - name: push-build
+      <<: *build_pipeline
+    - name: push-deploy
+      <<: *deploy_pipeline
+
+  # pull_request 事件触发的流水线
+  pull_request:
+    - name: pr-build
+      <<: *build_pipeline 
