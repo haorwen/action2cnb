@@ -262,6 +262,14 @@ function App() {
     <div className="App">
       <header className="App-header">
         <h1>GitHub Actions to CNB Converter</h1>
+        <a
+          href="https://cnb.cool/haorwen/action2cnb"
+          className="repo-link"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          项目仓库
+        </a>
         <p>Upload a GitHub Actions workflow file (.yml) to convert it to CNB format</p>
       </header>
       <div className="early-stage-note">
