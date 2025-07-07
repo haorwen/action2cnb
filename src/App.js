@@ -303,7 +303,7 @@ function App() {
               <textarea
                 value={githubYaml}
                 onChange={(e) => setGithubYaml(e.target.value)}
-                placeholder="Paste your GitHub Actions YAML here or upload a file"
+                placeholder="上传你的github workflow文件或者直接在这里粘贴"
                 className="code-editor"
               />
             </div>
@@ -313,7 +313,7 @@ function App() {
               <textarea
                 value={cnbYaml}
                 readOnly
-                placeholder="The converted CNB YAML will appear here"
+                placeholder="转换完的CNB流水线会在这里展示"
                 className="code-editor"
               />
             </div>
