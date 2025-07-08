@@ -1,6 +1,7 @@
 # GitHub Actions to CNB Converter
 
 这个应用程序可以将 GitHub Actions 工作流文件转换为 CNB (Cloud Native Build) 格式。
+你可以进入[action2cnb.haorwen.top](https://action2cnb.haorwen.top/)直接在线使用
 
 > [!NOTE]
 > 该项目目前处于早期开发阶段，如果您遇到任何问题，请提交issue反馈。
