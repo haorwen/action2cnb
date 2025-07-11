@@ -125,7 +125,7 @@ function App() {
                       
                       // Handle common GitHub Actions
                       if (step.uses.startsWith('actions/checkout@')) {
-                        script = `# 仓库已由 CNB 平台自动 clone，无需重复操作`;
+                        script = `# 仓库已由 CNB 自动 clone`;
                       } else if (step.uses.startsWith('actions/setup-node@')) {
                         script = `# Setup Node.js environment\ncurl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh | bash\nexport NVM_DIR="$HOME/.nvm"\n[ -s "$NVM_DIR/nvm.sh" ] && \\. "$NVM_DIR/nvm.sh"\nnvm install ${step.with?.['node-version'] || 'lts/*'}\nnvm use ${step.with?.['node-version'] || 'lts/*'}`;
                       }
@@ -149,6 +149,74 @@ function App() {
             }
           }
         });
+
+        // 处理 schedule 定时任务，转为 crontab: ${CRON}
+        if (githubWorkflow.on.schedule) {
+          const schedules = Array.isArray(githubWorkflow.on.schedule)
+            ? githubWorkflow.on.schedule
+            : [githubWorkflow.on.schedule];
+          schedules.forEach((schedule, idx) => {
+            const cronExpr = schedule.cron;
+            if (cronExpr) {
+              const eventName = `crontab: ${cronExpr}`;
+              cnbWorkflow[defaultBranch][eventName] = [];
+              // 生成流水线内容（与 push/pull_request 相同）
+              if (githubWorkflow.jobs) {
+                if (useYamlAnchors) {
+                  Object.keys(githubWorkflow.jobs).forEach(jobName => {
+                    cnbWorkflow[defaultBranch][eventName].push({
+                      name: `crontab-${jobName}`,
+                      '<<': `*${jobName}`
+                    });
+                  });
+                } else {
+                  Object.entries(githubWorkflow.jobs).forEach(([jobName, jobConfig]) => {
+                    const pipeline = {
+                      name: `crontab-${jobName}`,
+                      stages: []
+                    };
+                    // Create a stage from the job
+                    const stage = {
+                      name: jobName,
+                      tasks: []
+                    };
+                    // Handle runner/environment
+                    if (jobConfig.runs_on) {
+                      stage.runtime = {
+                        type: "DOCKER",
+                        image: mapRunnerToImage(jobConfig.runs_on)
+                      };
+                    }
+                    // Convert steps to tasks
+                    if (jobConfig.steps) {
+                      const tasks = jobConfig.steps.map((step, index) => {
+                        const taskName = step.name || `task-${index + 1}`;
+                        let script = '';
+                        if (step.uses) {
+                          script = `# This would use GitHub Action: ${step.uses}\n# CNB equivalent command:\necho \"Converting ${step.uses} action to CNB format\"`;
+                          if (step.uses.startsWith('actions/checkout@')) {
+                            script = `# 仓库已由 CNB 自动 clone`;
+                          } else if (step.uses.startsWith('actions/setup-node@')) {
+                            script = `# Setup Node.js environment\ncurl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh | bash\nexport NVM_DIR=\"$HOME/.nvm\"\n[ -s \"$NVM_DIR/nvm.sh\" ] && \\. \"$NVM_DIR/nvm.sh\"\nnvm install ${step.with?.['node-version'] || 'lts/*'}\nnvm use ${step.with?.['node-version'] || 'lts/*'}`;
+                          }
+                        } else if (step.run) {
+                          script = step.run;
+                        }
+                        return {
+                          name: taskName,
+                          script: script
+                        };
+                      });
+                      stage.tasks = tasks;
+                    }
+                    pipeline.stages.push(stage);
+                    cnbWorkflow[defaultBranch][eventName].push(pipeline);
+                  });
+                }
+              }
+            }
+          });
+        }
       }
       
       // If using YAML anchors, add the anchor definitions
