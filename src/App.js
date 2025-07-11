@@ -194,7 +194,7 @@ function App() {
           if (step.uses.startsWith('actions/checkout@')) {
             script = `# 仓库已由 CNB 平台自动 clone，无需重复操作`;
           } else if (step.uses.startsWith('actions/setup-node@')) {
-            script = `# Setup Node.js environment\ncurl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh | bash\nexport NVM_DIR=\"$HOME/.nvm\"\n[ -s \"$NVM_DIR/nvm.sh\" ] && \\. \"$NVM_DIR/nvm.sh\"\nnvm install ${step.with?.['node-version'] || 'lts/*'}\nnvm use ${step.with?.['node-version'] || 'lts/*'}`;
+            script = `# Setup Node.js environment\ncurl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh | bash\nexport NVM_DIR="$HOME/.nvm"\n[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"\nnvm install \${step.with?.['node-version'] || 'lts/*'}\nnvm use \${step.with?.['node-version'] || 'lts/*'}`;
           }
         } else if (step.run) {
           // It's a shell command
