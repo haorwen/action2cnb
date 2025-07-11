@@ -61,6 +61,9 @@ function App() {
             ? githubWorkflow.on 
             : Object.keys(githubWorkflow.on);
         
+        // 全局 env
+        let globalEnv = githubWorkflow.env || {};
+        
         // If using YAML anchors, create common pipeline templates
         if (useYamlAnchors && githubWorkflow.jobs) {
           // Create common job templates using YAML anchors
@@ -68,7 +71,7 @@ function App() {
           
           // For each job, create a template
           Object.entries(githubWorkflow.jobs).forEach(([jobName, jobConfig]) => {
-            const pipeline = createPipelineFromJob(jobName, jobConfig);
+            const pipeline = createPipelineFromJob(jobName, jobConfig, globalEnv);
             commonPipelines[jobName] = pipeline;
           });
           
@@ -77,76 +80,20 @@ function App() {
         }
         
         triggerTypes.forEach(triggerType => {
-          // Initialize the trigger array in the CNB structure
           cnbWorkflow[defaultBranch][triggerType] = [];
-          
-          // Create a pipeline for each job in GitHub workflow
           if (githubWorkflow.jobs) {
-            if (useYamlAnchors) {
-              // Use references to the templates
-              Object.keys(githubWorkflow.jobs).forEach(jobName => {
-                cnbWorkflow[defaultBranch][triggerType].push({
-                  name: `${triggerType}-${jobName}`,
-                  '<<': `*${jobName}`
-                });
-              });
-            } else {
-              // Create full pipeline definitions
-              Object.entries(githubWorkflow.jobs).forEach(([jobName, jobConfig]) => {
-                const pipeline = {
-                  name: `${triggerType}-${jobName}`,
-                  stages: []
-                };
-                
-                // Create a stage from the job
-                const stage = {
-                  name: jobName,
-                  tasks: []
-                };
-                
-                // Handle runner/environment
-                if (jobConfig.runs_on) {
-                  stage.runtime = {
-                    type: "DOCKER",
-                    image: mapRunnerToImage(jobConfig.runs_on)
-                  };
-                }
-                
-                // Convert steps to tasks
-                if (jobConfig.steps) {
-                  const tasks = jobConfig.steps.map((step, index) => {
-                    const taskName = step.name || `task-${index + 1}`;
-                    let script = '';
-                    
-                    // Handle different step types
-                    if (step.uses) {
-                      // It's an action
-                      script = `# This would use GitHub Action: ${step.uses}\n# CNB equivalent command:\necho "Converting ${step.uses} action to CNB format"`;
-                      
-                      // Handle common GitHub Actions
-                      if (step.uses.startsWith('actions/checkout@')) {
-                        script = `# 仓库已由 CNB 自动 clone`;
-                      } else if (step.uses.startsWith('actions/setup-node@')) {
-                        script = `# Setup Node.js environment\ncurl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh | bash\nexport NVM_DIR="$HOME/.nvm"\n[ -s "$NVM_DIR/nvm.sh" ] && \\. "$NVM_DIR/nvm.sh"\nnvm install ${step.with?.['node-version'] || 'lts/*'}\nnvm use ${step.with?.['node-version'] || 'lts/*'}`;
-                      }
-                    } else if (step.run) {
-                      // It's a shell command
-                      script = step.run;
-                    }
-                    
-                    return {
-                      name: taskName,
-                      script: script
-                    };
-                  });
-                  
-                  stage.tasks = tasks;
-                }
-                
-                pipeline.stages.push(stage);
-                cnbWorkflow[defaultBranch][triggerType].push(pipeline);
-              });
-            }
+            let isFirst = true;
+            Object.keys(githubWorkflow.jobs).forEach(jobName => {
+              const pipelineObj = {
+                name: `${triggerType}-${jobName}`,
+                '<<': `*${jobName}`
+              };
+              if (isFirst && Object.keys(globalEnv).length > 0) {
+                pipelineObj.env = globalEnv;
+                isFirst = false;
+              }
+              cnbWorkflow[defaultBranch][triggerType].push(pipelineObj);
+            });
           }
         });
 
@@ -160,59 +107,19 @@ function App() {
             if (cronExpr) {
               const eventName = `crontab: ${cronExpr}`;
               cnbWorkflow[defaultBranch][eventName] = [];
-              // 生成流水线内容（与 push/pull_request 相同）
               if (githubWorkflow.jobs) {
-                if (useYamlAnchors) {
-                  Object.keys(githubWorkflow.jobs).forEach(jobName => {
-                    cnbWorkflow[defaultBranch][eventName].push({
-                      name: `crontab-${jobName}`,
-                      '<<': `*${jobName}`
-                    });
-                  });
-                } else {
-                  Object.entries(githubWorkflow.jobs).forEach(([jobName, jobConfig]) => {
-                    const pipeline = {
-                      name: `crontab-${jobName}`,
-                      stages: []
-                    };
-                    // Create a stage from the job
-                    const stage = {
-                      name: jobName,
-                      tasks: []
-                    };
-                    // Handle runner/environment
-                    if (jobConfig.runs_on) {
-                      stage.runtime = {
-                        type: "DOCKER",
-                        image: mapRunnerToImage(jobConfig.runs_on)
-                      };
-                    }
-                    // Convert steps to tasks
-                    if (jobConfig.steps) {
-                      const tasks = jobConfig.steps.map((step, index) => {
-                        const taskName = step.name || `task-${index + 1}`;
-                        let script = '';
-                        if (step.uses) {
-                          script = `# This would use GitHub Action: ${step.uses}\n# CNB equivalent command:\necho \"Converting ${step.uses} action to CNB format\"`;
-                          if (step.uses.startsWith('actions/checkout@')) {
-                            script = `# 仓库已由 CNB 自动 clone`;
-                          } else if (step.uses.startsWith('actions/setup-node@')) {
-                            script = `# Setup Node.js environment\ncurl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh | bash\nexport NVM_DIR=\"$HOME/.nvm\"\n[ -s \"$NVM_DIR/nvm.sh\" ] && \\. \"$NVM_DIR/nvm.sh\"\nnvm install ${step.with?.['node-version'] || 'lts/*'}\nnvm use ${step.with?.['node-version'] || 'lts/*'}`;
-                          }
-                        } else if (step.run) {
-                          script = step.run;
-                        }
-                        return {
-                          name: taskName,
-                          script: script
-                        };
-                      });
-                      stage.tasks = tasks;
-                    }
-                    pipeline.stages.push(stage);
-                    cnbWorkflow[defaultBranch][eventName].push(pipeline);
-                  });
-                }
+                let isFirst = true;
+                Object.keys(githubWorkflow.jobs).forEach(jobName => {
+                  const pipelineObj = {
+                    name: `crontab-${jobName}`,
+                    '<<': `*${jobName}`
+                  };
+                  if (isFirst && Object.keys(globalEnv).length > 0) {
+                    pipelineObj.env = globalEnv;
+                    isFirst = false;
+                  }
+                  cnbWorkflow[defaultBranch][eventName].push(pipelineObj);
+                });
               }
             }
           });
@@ -251,7 +158,7 @@ function App() {
   };
   
   // Helper function to create a pipeline from a GitHub Actions job
-  const createPipelineFromJob = (jobName, jobConfig) => {
+  const createPipelineFromJob = (jobName, jobConfig, globalEnv = {}) => {
     const pipeline = {
       stages: []
     };
@@ -269,38 +176,45 @@ function App() {
         image: mapRunnerToImage(jobConfig.runs_on)
       };
     }
-    
+    // 2. job 级 env
+    let jobEnv = jobConfig.env || {};
     // Convert steps to tasks
     if (jobConfig.steps) {
       const tasks = jobConfig.steps.map((step, index) => {
         const taskName = step.name || `task-${index + 1}`;
         let script = '';
-        
+        // 3. step 级 env
+        let stepEnv = step.env || {};
+        // 只在 task 上加 step 级 env
         // Handle different step types
         if (step.uses) {
           // It's an action
           script = `# This would use GitHub Action: ${step.uses}\n# CNB equivalent command:\necho "Converting ${step.uses} action to CNB format"`;
-          
           // Handle common GitHub Actions
           if (step.uses.startsWith('actions/checkout@')) {
             script = `# 仓库已由 CNB 平台自动 clone，无需重复操作`;
           } else if (step.uses.startsWith('actions/setup-node@')) {
-            script = `# Setup Node.js environment\ncurl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh | bash\nexport NVM_DIR="$HOME/.nvm"\n[ -s "$NVM_DIR/nvm.sh" ] && \\. "$NVM_DIR/nvm.sh"\nnvm install ${step.with?.['node-version'] || 'lts/*'}\nnvm use ${step.with?.['node-version'] || 'lts/*'}`;
+            script = `# Setup Node.js environment\ncurl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh | bash\nexport NVM_DIR=\"$HOME/.nvm\"\n[ -s \"$NVM_DIR/nvm.sh\" ] && \\. \"$NVM_DIR/nvm.sh\"\nnvm install ${step.with?.['node-version'] || 'lts/*'}\nnvm use ${step.with?.['node-version'] || 'lts/*'}`;
           }
         } else if (step.run) {
           // It's a shell command
           script = step.run;
         }
-        
-        return {
+        const taskObj = {
           name: taskName,
           script: script
         };
+        if (Object.keys(stepEnv).length > 0) {
+          taskObj.env = stepEnv;
+        }
+        return taskObj;
       });
-      
       stage.tasks = tasks;
     }
-    
+    // job 级 env 只加到 stage
+    if (Object.keys(jobEnv).length > 0) {
+      stage.env = jobEnv;
+    }
     pipeline.stages.push(stage);
     return pipeline;
   };
