@@ -255,7 +255,7 @@ function App() {
         <p>Upload a GitHub Actions workflow file (.yml) to convert it to CNB format</p>
       </header>
       <div className="early-stage-note">
-        该项目目前处于早期开发阶段，如果您遇到任何问题，请提交issue反馈。
+        该项目目前处于早期开发阶段，如果您遇到任何问题，请提交issue反馈。<br />本项目只是方便基础语法的转换，部分高级语法可能无法转换，请参考CNB官方文档修改并检查后进行使用。
       </div>
       <main className="App-main">
         <div className="converter-container">
