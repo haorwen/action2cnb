@@ -33,211 +33,298 @@ function App() {
   const convertToCNB = () => {
     setError('');
     setCnbYaml('');
-    
+
     try {
-      // Parse the GitHub Actions workflow YAML
+      // 1) 解析 GitHub Actions workflow
       const githubWorkflow = yaml.load(githubYaml);
-      
-      // Start creating the CNB workflow
-      const cnbWorkflow = {};
-      
-      // Extract default branch from triggers
+      if (!githubWorkflow) {
+        setError('无法解析 YAML：内容为空');
+        return;
+      }
+
+      // 2) 分支选择（定时任务要求明确分支，不支持 glob，普通事件可用默认 main）
       let defaultBranch = 'main';
       if (githubWorkflow.on && githubWorkflow.on.push && githubWorkflow.on.push.branches) {
-        defaultBranch = Array.isArray(githubWorkflow.on.push.branches) 
-          ? githubWorkflow.on.push.branches[0] 
-          : githubWorkflow.on.push.branches;
+        const br = githubWorkflow.on.push.branches;
+        defaultBranch = Array.isArray(br) ? (br[0] || 'main') : br || 'main';
       }
-      
-      // Initialize the branch structure
-      cnbWorkflow[defaultBranch] = {};
-      
-      // Process triggers and jobs
-      if (githubWorkflow.on) {
-        // Handle different trigger types
-        const triggerTypes = typeof githubWorkflow.on === 'string' 
-          ? [githubWorkflow.on] 
-          : Array.isArray(githubWorkflow.on) 
-            ? githubWorkflow.on 
-            : Object.keys(githubWorkflow.on);
-        
-        // 全局 env
-        let globalEnv = githubWorkflow.env || {};
-        
-        // If using YAML anchors, create common pipeline templates
-        if (useYamlAnchors && githubWorkflow.jobs) {
-          // Create common job templates using YAML anchors
-          const commonPipelines = {};
-          
-          // For each job, create a template
-          Object.entries(githubWorkflow.jobs).forEach(([jobName, jobConfig]) => {
-            const pipeline = createPipelineFromJob(jobName, jobConfig, globalEnv);
-            commonPipelines[jobName] = pipeline;
-          });
-          
-          // Add the templates as anchors at the beginning of the YAML
-          cnbWorkflow['.templates'] = commonPipelines;
-        }
-        
-        triggerTypes.forEach(triggerType => {
-          cnbWorkflow[defaultBranch][triggerType] = [];
-          if (githubWorkflow.jobs) {
-            let isFirst = true;
-            Object.keys(githubWorkflow.jobs).forEach(jobName => {
-              const pipelineObj = {
-                name: `${triggerType}-${jobName}`,
-                '<<': `*${jobName}`
-              };
-              if (isFirst && Object.keys(globalEnv).length > 0) {
-                pipelineObj.env = globalEnv;
-                isFirst = false;
-              }
-              cnbWorkflow[defaultBranch][triggerType].push(pipelineObj);
-            });
-          }
-        });
 
-        // 处理 schedule 定时任务，转为 crontab: ${CRON}
-        if (githubWorkflow.on.schedule) {
-          const schedules = Array.isArray(githubWorkflow.on.schedule)
-            ? githubWorkflow.on.schedule
-            : [githubWorkflow.on.schedule];
-          schedules.forEach((schedule, idx) => {
-            const cronExpr = schedule.cron;
-            if (cronExpr) {
-              const eventName = `crontab: ${cronExpr}`;
-              cnbWorkflow[defaultBranch][eventName] = [];
-              if (githubWorkflow.jobs) {
-                let isFirst = true;
-                Object.keys(githubWorkflow.jobs).forEach(jobName => {
-                  const pipelineObj = {
-                    name: `crontab-${jobName}`,
-                    '<<': `*${jobName}`
-                  };
-                  if (isFirst && Object.keys(globalEnv).length > 0) {
-                    pipelineObj.env = globalEnv;
-                    isFirst = false;
-                  }
-                  cnbWorkflow[defaultBranch][eventName].push(pipelineObj);
-                });
-              }
+      // 3) 全局 env（pipeline 级别）
+      const globalEnv = githubWorkflow.env || {};
+
+      // 4) 构建可识别事件映射（将 GH 事件名映射为 CNB 支持的事件名）
+      const EVENT_MAP = {
+        push: 'push',
+        pull_request: 'pull_request',
+        workflow_dispatch: 'web_trigger', // 页面手动触发
+        repository_dispatch: 'api_trigger', // API 触发
+      };
+
+      // 5) 收集 GH 触发类型（排除 schedule，schedule 单独处理为 crontab）
+      const triggerOn = githubWorkflow.on;
+      const rawTriggerTypes = (typeof triggerOn === 'string')
+        ? [triggerOn]
+        : Array.isArray(triggerOn)
+          ? triggerOn
+          : triggerOn ? Object.keys(triggerOn) : [];
+      const triggerTypes = rawTriggerTypes.filter(t => t !== 'schedule');
+
+      // 6) 生成模板（使用锚点时会被 <<: *alias 合并）
+      const templates = {}; // { [jobName]: pipelineTemplate }
+
+      if (githubWorkflow.jobs) {
+        Object.entries(githubWorkflow.jobs).forEach(([jobName, jobConfig]) => {
+          const pipelineTemplate = createPipelineFromJob(jobName, jobConfig, globalEnv);
+          // 模板里不放 name，具体流水线实例再填 name，避免被合并覆盖
+          delete pipelineTemplate.name;
+          templates[jobName] = pipelineTemplate;
+        });
+      }
+
+      // 7) 根据事件生成流水线引用（每个事件下引用模板）
+      const branches = { [defaultBranch]: {} }; // { branchKey: { eventKey: [pipelines...] } }
+
+      // 普通事件（push / pull_request / web_trigger / api_trigger ...）
+      triggerTypes.forEach(ghEvent => {
+        const eventKey = EVENT_MAP[ghEvent];
+        if (!eventKey) return; // 跳过 CNB 不支持的事件
+        branches[defaultBranch][eventKey] = [];
+        if (githubWorkflow.jobs) {
+          Object.keys(githubWorkflow.jobs).forEach(jobName => {
+            // 使用锚点：事件下的流水线只需要 name + <<: *alias
+            // 针对 Node.js 矩阵构建：每个版本生成独立模板，不保留任何 ${{ matrix.node-version }} 占位符
+            const originalJobConfig = githubWorkflow.jobs[jobName];
+            if (originalJobConfig.strategy && originalJobConfig.strategy.matrix && originalJobConfig.strategy.matrix['node-version']) {
+              const versions = originalJobConfig.strategy.matrix['node-version'];
+              versions.forEach(ver => {
+                const aliasName = `${jobName}-${ver}`;
+                // 基于原 jobConfig 重新构建 pipeline，确保 stages 正常生成
+                const rebuiltPipeline = createPipelineFromJob(jobName, {
+                  ...originalJobConfig,
+                  strategy: undefined, // 移除矩阵定义避免递归
+                }, globalEnv);
+                // 强制替换镜像为当前版本
+                rebuiltPipeline.docker = { image: `node:${ver}` };
+                templates[aliasName] = rebuiltPipeline;
+                branches[defaultBranch][eventKey].push({ alias: aliasName, name: `${eventKey}-${aliasName}` });
+              });
+              // 删除原 jobName 模板，避免生成空 stages 的锚点
+              delete templates[jobName];
+            } else {
+              branches[defaultBranch][eventKey].push({ alias: jobName, name: `${eventKey}-${jobName}` });
             }
           });
         }
+      });
+
+      // 定时任务（"crontab: ${CRON}" 作为事件名，必须是明确分支）
+      if (triggerOn && triggerOn.schedule) {
+        const schedules = Array.isArray(triggerOn.schedule) ? triggerOn.schedule : [triggerOn.schedule];
+        schedules.forEach((sch) => {
+          const cronExpr = sch && sch.cron;
+          if (!cronExpr) return;
+          const cronKey = `crontab: ${cronExpr}`; // 注意：YAML 里要加引号
+          branches[defaultBranch][cronKey] = [];
+          if (githubWorkflow.jobs) {
+            Object.keys(githubWorkflow.jobs).forEach(jobName => {
+              branches[defaultBranch][cronKey].push({ alias: jobName, name: `crontab-${jobName}` });
+            });
+          }
+        });
       }
-      
-      // If using YAML anchors, add the anchor definitions
+
+      // 8) 输出 YAML
       if (useYamlAnchors) {
-        // Add YAML anchors to the templates
-        let yamlText = '';
-        
-        // Define templates with anchors
-        if (cnbWorkflow['.templates']) {
-          Object.entries(cnbWorkflow['.templates']).forEach(([name, template]) => {
-            yamlText += `.${name}: &${name}\n`;
-            yamlText += yaml.dump(template);
-            yamlText += '\n';
-          });
-          
-          // Remove the templates property
-          delete cnbWorkflow['.templates'];
-        }
-        
-        // Add the rest of the YAML
-        yamlText += yaml.dump(cnbWorkflow);
+        // (A) 使用锚点与别名，构造正确的 <<: *alias 语法
+        const yamlText = buildYamlWithAnchors(templates, branches);
         setCnbYaml(yamlText);
       } else {
-        // Convert the CNB workflow to YAML without anchors
-        const cnbYamlResult = yaml.dump(cnbWorkflow);
-        setCnbYaml(cnbYamlResult);
+        // (B) 不使用锚点，直接把模板内容合并到实例（深拷贝）
+        const expanded = expandTemplates(templates, branches);
+        setCnbYaml(yaml.dump(expanded));
       }
     } catch (err) {
       setError(`Error converting workflow: ${err.message}`);
       console.error(err);
     }
   };
-  
-  // Helper function to create a pipeline from a GitHub Actions job
+
+  /**
+   * 将模板+事件结构渲染为带锚点与别名的 YAML 字符串
+   */
+  const buildYamlWithAnchors = (templates, branches) => {
+    const parts = [];
+
+    // 1) 顶部输出模板锚点：`.name: &name`，其值是一个映射，需要缩进
+    Object.entries(templates).forEach(([name, tpl]) => {
+      parts.push(`.${name}: &${name}`);
+      parts.push(indentBlock(yaml.dump(tpl), 2));
+      parts.push('');
+    });
+
+    // 2) 输出分支与事件
+    Object.entries(branches).forEach(([branch, events]) => {
+      parts.push(`${quoteIfNeeded(branch)}:`);
+      Object.entries(events).forEach(([eventKey, arr]) => {
+        const isCron = eventKey.startsWith('crontab: ');
+        const ek = isCron ? `"${eventKey}"` : eventKey; // crontab 带冒号，须加引号
+        parts.push(`  ${ek}:`);
+        if (!arr || arr.length === 0) {
+          parts.push('    []');
+          return;
+        }
+        arr.forEach(item => {
+          parts.push('    -');
+          parts.push(`      name: ${quoteIfNeeded(item.name)}`);
+          parts.push(`      <<: *${item.alias}`);
+        });
+      });
+    });
+
+    return parts.join('\n');
+  };
+
+  /** 深度合并模板：把 alias 展开成完整对象（不使用锚点时用） */
+  const expandTemplates = (templates, branches) => {
+    const out = {};
+    Object.entries(branches).forEach(([branch, events]) => {
+      out[branch] = {};
+      Object.entries(events).forEach(([eventKey, items]) => {
+        // crontab key 要保留原样（含空格与冒号）
+        out[branch][eventKey] = items.map(({ alias, name }) => {
+          const tpl = deepClone(templates[alias] || {});
+          return { name, ...tpl };
+        });
+      });
+    });
+    return out;
+  };
+
+  // Helper: 创建模板 Pipeline（符合 CNB 语法：pipeline.docker/env/stages/jobs/script）
   const createPipelineFromJob = (jobName, jobConfig, globalEnv = {}) => {
     const pipeline = {
+      env: Object.keys(globalEnv).length ? { ...globalEnv } : undefined,
+      docker: undefined,
       stages: []
     };
-    
-    // Create a stage from the job
+
+    // 1) 解析 runs-on -> docker.image（注意 GH 用的是 "runs-on"）
+    const runsOn = jobConfig?.runsOn || jobConfig?.['runs-on'];
+    const mappedImage = mapRunnerToDockerImage(runsOn);
+
+    // 2) 将 steps 转换为一个 Stage，包含多个 Job（脚本任务）
     const stage = {
       name: jobName,
-      tasks: []
+      jobs: []
     };
-    
-    // Handle runner/environment
-    if (jobConfig.runs_on) {
-      stage.runtime = {
-        type: "DOCKER",
-        image: mapRunnerToImage(jobConfig.runs_on)
-      };
+
+    // job 级 env（stage 级生效）
+    if (jobConfig && jobConfig.env && Object.keys(jobConfig.env).length > 0) {
+      stage.env = { ...jobConfig.env };
     }
-    // 2. job 级 env
-    let jobEnv = jobConfig.env || {};
-    // Convert steps to tasks
-    if (jobConfig.steps) {
-      const tasks = jobConfig.steps.map((step, index) => {
-        const taskName = step.name || `task-${index + 1}`;
-        let script = '';
-        // 3. step 级 env
-        let stepEnv = step.env || {};
-        // 只在 task 上加 step 级 env
-        // Handle different step types
+
+    let imageFromSetupNode = undefined;
+
+    if (Array.isArray(jobConfig?.steps)) {
+      jobConfig.steps.forEach((step, index) => {
+        const taskName = step.name || `step-${index + 1}`;
+
+        // step 级 env（job 级生效）
+        const stepEnv = step.env && Object.keys(step.env).length > 0 ? { ...step.env } : undefined;
+
+        // 处理常见 actions
         if (step.uses) {
-          // It's an action
-          script = `# This would use GitHub Action: ${step.uses}\n# CNB equivalent command:\necho "Converting ${step.uses} action to CNB format"`;
-          // Handle common GitHub Actions
-          if (step.uses.startsWith('actions/checkout@')) {
-            script = `# 仓库已由 CNB 平台自动 clone，无需重复操作`;
-          } else if (step.uses.startsWith('actions/setup-node@')) {
-            script = `# Setup Node.js environment\ncurl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh | bash\nexport NVM_DIR="$HOME/.nvm"\n[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"\nnvm install \${step.with?.['node-version'] || 'lts/*'}\nnvm use \${step.with?.['node-version'] || 'lts/*'}`;
+          // actions/checkout -> 由 CNB 自动 clone，可忽略
+          if (String(step.uses).startsWith('actions/checkout@')) {
+            return; // 跳过
           }
-        } else if (step.run) {
-          // It's a shell command
-          script = step.run;
+
+          // actions/setup-node -> 尽量映射为 node 镜像，提升可复现性
+          if (String(step.uses).startsWith('actions/setup-node@')) {
+            const ver = step.with?.['node-version'] || step.with?.['node-version-file'] || '20';
+            imageFromSetupNode = `node:${String(ver).replace(/^v/, '')}`;
+            return; // 不再注入脚本
+          }
+
+          // 其他 uses：降级为提示脚本
+          stage.jobs.push({
+            name: taskName,
+            script: `# 使用 GitHub Action: ${step.uses}\n# 请手动替换为等效 CNB 插件或脚本`,
+            ...(stepEnv ? { env: stepEnv } : {})
+          });
+          return;
         }
-        const taskObj = {
-          name: taskName,
-          script: script
-        };
-        if (Object.keys(stepEnv).length > 0) {
-          taskObj.env = stepEnv;
+
+        // 普通 run 脚本
+        if (step.run) {
+          stage.jobs.push({
+            name: taskName,
+            script: String(step.run),
+            ...(stepEnv ? { env: stepEnv } : {})
+          });
         }
-        return taskObj;
       });
-      stage.tasks = tasks;
     }
-    // job 级 env 只加到 stage
-    if (Object.keys(jobEnv).length > 0) {
-      stage.env = jobEnv;
+
+    // 如果 setup-node 指定了镜像优先使用，否则用 runs-on 映射
+    const finalImage = imageFromSetupNode || mappedImage;
+    if (finalImage) {
+      pipeline.docker = { image: finalImage };
     }
+
+    // 没有 steps 的空任务，给个空脚本避免语法错误
+    if (!stage.jobs.length) {
+      stage.jobs.push({ name: 'noop', script: 'echo "noop"' });
+    }
+
     pipeline.stages.push(stage);
+
+    // 清理 undefined
+    if (!pipeline.env) delete pipeline.env;
+    if (!pipeline.docker) delete pipeline.docker;
+
     return pipeline;
   };
-  
-  // Helper function to map GitHub Actions runner to CNB image
-  const mapRunnerToImage = (runsOn) => {
-    if (Array.isArray(runsOn)) {
-      runsOn = runsOn[0]; // Take the first option
-    }
-    
+
+  // GH Runner 到 CNB docker.image 的简单映射
+  const mapRunnerToDockerImage = (runsOn) => {
+    if (!runsOn) return undefined;
+    if (Array.isArray(runsOn)) runsOn = runsOn[0];
+
     switch (runsOn) {
       case 'ubuntu-latest':
+      case 'ubuntu-24.04':
       case 'ubuntu-22.04':
         return 'ubuntu:22.04';
       case 'ubuntu-20.04':
         return 'ubuntu:20.04';
       case 'windows-latest':
-        return 'mcr.microsoft.com/windows/servercore:ltsc2022';
+        // CNB 基于容器执行，Windows Runner 暂不直接支持，退化为 alpine
+        return 'alpine:latest';
       case 'macos-latest':
-        return 'alpine:latest'; // CNB might not support macOS runners directly
+      case 'macos-14':
+      case 'macos-13':
+        // macOS 不直接支持，退化为 alpine
+        return 'alpine:latest';
       default:
         return 'ubuntu:latest';
     }
+  };
+
+  // ------ Utils ------
+  const indentBlock = (text, spaces = 2) => {
+    const pad = ' '.repeat(spaces);
+    return String(text)
+      .split('\n')
+      .map((line) => (line.trim().length ? pad + line : line))
+      .join('\n');
+  };
+
+  const deepClone = (obj) => JSON.parse(JSON.stringify(obj));
+
+  const quoteIfNeeded = (s) => {
+    const str = String(s);
+    return /[:#\-?*&!|>'"%@`{}[\],\s]/.test(str) ? JSON.stringify(str) : str;
   };
 
   return (
@@ -273,7 +360,7 @@ function App() {
               转换成cnb.yml
             </button>
           </div>
-          
+
           <div className="options">
             <label className="option-label">
               <input
@@ -284,9 +371,9 @@ function App() {
               使用 YAML 锚点和别名简化配置（推荐）
             </label>
           </div>
-          
+
           {error && <div className="error-message">{error}</div>}
-          
+
           <div className="editors">
             <div className="editor-container">
               <h3>GitHub Actions Workflow</h3>
@@ -297,7 +384,7 @@ function App() {
                 className="code-editor"
               />
             </div>
-            
+
             <div className="editor-container">
               <h3>CNB Workflow</h3>
               <textarea
@@ -308,19 +395,19 @@ function App() {
               />
             </div>
           </div>
-          
+
           {cnbYaml && (
             <div className="download-section">
               <a
                 href={`data:text/yaml;charset=utf-8,${encodeURIComponent(cnbYaml)}`}
-                download="cnb.yml"
+                download=".cnb.yml"
                 className="download-button"
               >
                 Download CNB Workflow
               </a>
             </div>
           )}
-          
+
           <div className="info-section">
             <h3>什么是 CNB YAML 高级语法</h3>
             <p>
@@ -328,20 +415,7 @@ function App() {
               这种方式可以减少重复，使配置文件更加简洁。建议打开使用 YAML 锚点和别名简化配置选项。
             </p>
             <pre className="code-example">
-{`.pipeline: &pipeline  # 定义锚点
-  docker:
-    image: node:22
-  stages:
-    - name: install
-      script: npm install
-    - name: test
-      script: npm test
-
-main:
-  pull_request:
-    - <<: *pipeline  # 使用别名引用
-  push:
-    - <<: *pipeline  # 使用别名引用`}
+{`.pipeline: &pipeline  # 定义锚点\n  docker:\n    image: node:22\n  stages:\n    - name: install\n      script: npm install\n    - name: test\n      script: npm test\n\nmain:\n  pull_request:\n    - <<: *pipeline  # 使用别名引用\n  push:\n    - <<: *pipeline  # 使用别名引用`}
             </pre>
           </div>
         </div>

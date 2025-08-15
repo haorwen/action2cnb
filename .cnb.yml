@@ -10,6 +10,13 @@ $:
       services:
         - vscode
         - docker
+      stages:
+        - name: 安装依赖
+          script:
+            # 这里是nextjs构建需要使用的命令
+            - npm install -g pnpm
+            - pnpm install
+      
 
   tag_push:
     eo_deploy:

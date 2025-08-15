@@ -48,19 +48,25 @@ jobs:
 
 ### CNB 格式
 ```yaml
+.build: &build
+  docker:
+    image: ubuntu:22.04
+  stages:
+    - name: build
+      jobs:
+        - name: Run tests
+          script: npm test
+
+
 main:
   push:
-    - name: push-build
-      stages:
-        - name: build
-          runtime:
-            type: DOCKER
-            image: ubuntu:22.04
-          tasks:
-            - name: Checkout code
-              script: git clone $REPO_URL ./
-            - name: Run tests
-              script: npm test
+    -
+      name: "push-build"
+      <<: *build
+  pull_request:
+    -
+      name: "pull_request-build"
+      <<: *build
 ```
 
 ### 转换说明
