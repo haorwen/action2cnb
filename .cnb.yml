@@ -22,12 +22,18 @@ $:
     eo_deploy:
       runner:
         cpus: 32
+      docker:
+        image: node:20-alpine
       stages:
+        - name: 安装pnpm
+          script:
+            - npm install -g pnpm
+        - name: 安装依赖
+          script:
+            - pnpm i
         - name: 构建
-          image: node:20-alpine
           script:
             # 这里是nextjs构建需要使用的命令
-            - pnpm i
             - pnpm run build
         - name: 部署到 eo pages
           imports:
