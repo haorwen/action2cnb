@@ -27,8 +27,8 @@ $:
           image: node:20-alpine
           script:
             # 这里是nextjs构建需要使用的命令
-            - npm i
-            - npm run build
+            - pnpm i
+            - pnpm run build
         - name: 部署到 eo pages
           imports:
             # 这里导入Edgeone的密钥，可在eopages控制台点击API Token新建

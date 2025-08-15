@@ -104,7 +104,9 @@ function App() {
                   strategy: undefined, // 移除矩阵定义避免递归
                 }, globalEnv);
                 // 强制替换镜像为当前版本
-                rebuiltPipeline.docker = { image: `node:${ver}` };
+                // 如果版本是类似 16.x 这种，去掉 .x
+                const cleanVer = String(ver).endsWith('.x') ? String(ver).slice(0, -2) : String(ver);
+                rebuiltPipeline.docker = { image: `node:${cleanVer}` };
                 templates[aliasName] = rebuiltPipeline;
                 branches[defaultBranch][eventKey].push({ alias: aliasName, name: `${eventKey}-${aliasName}` });
               });
@@ -213,14 +215,12 @@ function App() {
     const mappedImage = mapRunnerToDockerImage(runsOn);
 
     // 2) 将 steps 转换为一个 Stage，包含多个 Job（脚本任务）
-    const stage = {
-      name: jobName,
-      jobs: []
-    };
+    // 将 GH steps 转为多个 stage（而不是一个 stage 多个 job）
+    const stages = [];
 
     // job 级 env（stage 级生效）
     if (jobConfig && jobConfig.env && Object.keys(jobConfig.env).length > 0) {
-      stage.env = { ...jobConfig.env };
+      // 每个 stage 都继承 job 级 env
     }
 
     let imageFromSetupNode = undefined;
@@ -228,41 +228,38 @@ function App() {
     if (Array.isArray(jobConfig?.steps)) {
       jobConfig.steps.forEach((step, index) => {
         const taskName = step.name || `step-${index + 1}`;
-
-        // step 级 env（job 级生效）
         const stepEnv = step.env && Object.keys(step.env).length > 0 ? { ...step.env } : undefined;
 
-        // 处理常见 actions
+        // 新建一个 stage 对应这个 step（直接包含 script，不再嵌套 jobs）
+        const stage = {
+          name: taskName
+        };
+        if (jobConfig && jobConfig.env && Object.keys(jobConfig.env).length > 0) {
+          stage.env = { ...jobConfig.env };
+        }
+        if (stepEnv) {
+          stage.env = { ...(stage.env || {}), ...stepEnv };
+        }
+
         if (step.uses) {
-          // actions/checkout -> 由 CNB 自动 clone，可忽略
           if (String(step.uses).startsWith('actions/checkout@')) {
             return; // 跳过
           }
-
-          // actions/setup-node -> 尽量映射为 node 镜像，提升可复现性
           if (String(step.uses).startsWith('actions/setup-node@')) {
             const ver = step.with?.['node-version'] || step.with?.['node-version-file'] || '20';
             imageFromSetupNode = `node:${String(ver).replace(/^v/, '')}`;
-            return; // 不再注入脚本
+            return;
           }
-
-          // 其他 uses：降级为提示脚本
-          stage.jobs.push({
-            name: taskName,
-            script: `# 使用 GitHub Action: ${step.uses}\n# 请手动替换为等效 CNB 插件或脚本`,
-            ...(stepEnv ? { env: stepEnv } : {})
-          });
+          stage.script = `# 使用 GitHub Action: ${step.uses}\n# 请手动替换为等效 CNB 插件或脚本`;
+          stages.push(stage);
           return;
         }
 
-        // 普通 run 脚本
         if (step.run) {
-          stage.jobs.push({
-            name: taskName,
-            script: String(step.run),
-            ...(stepEnv ? { env: stepEnv } : {})
-          });
+          stage.script = String(step.run);
         }
+
+        stages.push(stage);
       });
     }
 
@@ -273,11 +270,11 @@ function App() {
     }
 
     // 没有 steps 的空任务，给个空脚本避免语法错误
-    if (!stage.jobs.length) {
-      stage.jobs.push({ name: 'noop', script: 'echo "noop"' });
+    if (!stages.length) {
+      stages.push({ name: 'noop', jobs: [{ name: 'noop', script: 'echo "noop"' }] });
     }
 
-    pipeline.stages.push(stage);
+    pipeline.stages.push(...stages);
 
     // 清理 undefined
     if (!pipeline.env) delete pipeline.env;
