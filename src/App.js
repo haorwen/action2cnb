@@ -70,11 +70,24 @@ function App() {
       const triggerTypes = rawTriggerTypes.filter(t => t !== 'schedule');
 
       // 6) 生成模板（使用锚点时会被 <<: *alias 合并）
+      // 注意：对于“矩阵 node-version”的 job，模板中会**去掉 docker**，只保留 stages/env 等可复用部分
       const templates = {}; // { [jobName]: pipelineTemplate }
 
       if (githubWorkflow.jobs) {
         Object.entries(githubWorkflow.jobs).forEach(([jobName, jobConfig]) => {
-          const pipelineTemplate = createPipelineFromJob(jobName, jobConfig, globalEnv);
+          const isMatrixNode =
+            jobConfig?.strategy?.matrix &&
+            jobConfig.strategy.matrix['node-version'];
+
+          const pipelineTemplate = createPipelineFromJob(
+            jobName,
+            jobConfig,
+            globalEnv,
+            {
+              stripDocker: Boolean(isMatrixNode), // 矩阵下去掉 docker，实例里覆盖 image
+            }
+          );
+
           // 模板里不放 name，具体流水线实例再填 name，避免被合并覆盖
           delete pipelineTemplate.name;
           templates[jobName] = pipelineTemplate;
@@ -82,38 +95,35 @@ function App() {
       }
 
       // 7) 根据事件生成流水线引用（每个事件下引用模板）
-      const branches = { [defaultBranch]: {} }; // { branchKey: { eventKey: [pipelines...] } }
+      // 结构：{ branchKey: { eventKey: [ {alias, name, overrides?}, ... ] } }
+      const branches = { [defaultBranch]: {} };
 
       // 普通事件（push / pull_request / web_trigger / api_trigger ...）
       triggerTypes.forEach(ghEvent => {
         const eventKey = EVENT_MAP[ghEvent];
         if (!eventKey) return; // 跳过 CNB 不支持的事件
         branches[defaultBranch][eventKey] = [];
+
         if (githubWorkflow.jobs) {
-          Object.keys(githubWorkflow.jobs).forEach(jobName => {
-            // 使用锚点：事件下的流水线只需要 name + <<: *alias
-            // 针对 Node.js 矩阵构建：每个版本生成独立模板，不保留任何 ${{ matrix.node-version }} 占位符
-            const originalJobConfig = githubWorkflow.jobs[jobName];
-            if (originalJobConfig.strategy && originalJobConfig.strategy.matrix && originalJobConfig.strategy.matrix['node-version']) {
-              const versions = originalJobConfig.strategy.matrix['node-version'];
+          Object.entries(githubWorkflow.jobs).forEach(([jobName, jobConfig]) => {
+            // 矩阵 Node.js：用锚点复用除 image 外全部内容，在实例里覆盖 docker.image
+            const nodeVers = jobConfig?.strategy?.matrix?.['node-version'];
+            if (nodeVers) {
+              const versions = Array.isArray(nodeVers) ? nodeVers : [nodeVers];
               versions.forEach(ver => {
-                const aliasName = `${jobName}-${ver}`;
-                // 基于原 jobConfig 重新构建 pipeline，确保 stages 正常生成
-                const rebuiltPipeline = createPipelineFromJob(jobName, {
-                  ...originalJobConfig,
-                  strategy: undefined, // 移除矩阵定义避免递归
-                }, globalEnv);
-                // 强制替换镜像为当前版本
-                // 如果版本是类似 16.x 这种，去掉 .x
-                const cleanVer = String(ver).endsWith('.x') ? String(ver).slice(0, -2) : String(ver);
-                rebuiltPipeline.docker = { image: `node:${cleanVer}` };
-                templates[aliasName] = rebuiltPipeline;
-                branches[defaultBranch][eventKey].push({ alias: aliasName, name: `${eventKey}-${aliasName}` });
+                const cleanVer = String(ver).endsWith('.x') ? String(ver).slice(0, -2) : String(ver).replace(/^v/, '');
+                branches[defaultBranch][eventKey].push({
+                  alias: jobName, // 复用基础模板
+                  name: `${eventKey}-${jobName}-node${cleanVer}`,
+                  overrides: { docker: { image: `node:${cleanVer}` } }, // 仅覆盖镜像
+                });
               });
-              // 删除原 jobName 模板，避免生成空 stages 的锚点
-              delete templates[jobName];
             } else {
-              branches[defaultBranch][eventKey].push({ alias: jobName, name: `${eventKey}-${jobName}` });
+              // 非矩阵：直接复用模板（模板里已经包含 docker 或没有 docker）
+              branches[defaultBranch][eventKey].push({
+                alias: jobName,
+                name: `${eventKey}-${jobName}`,
+              });
             }
           });
         }
@@ -128,8 +138,24 @@ function App() {
           const cronKey = `crontab: ${cronExpr}`; // 注意：YAML 里要加引号
           branches[defaultBranch][cronKey] = [];
           if (githubWorkflow.jobs) {
-            Object.keys(githubWorkflow.jobs).forEach(jobName => {
-              branches[defaultBranch][cronKey].push({ alias: jobName, name: `crontab-${jobName}` });
+            Object.entries(githubWorkflow.jobs).forEach(([jobName, jobConfig]) => {
+              const nodeVers = jobConfig?.strategy?.matrix?.['node-version'];
+              if (nodeVers) {
+                const versions = Array.isArray(nodeVers) ? nodeVers : [nodeVers];
+                versions.forEach(ver => {
+                  const cleanVer = String(ver).endsWith('.x') ? String(ver).slice(0, -2) : String(ver).replace(/^v/, '');
+                  branches[defaultBranch][cronKey].push({
+                    alias: jobName,
+                    name: `crontab-${jobName}-node${cleanVer}`,
+                    overrides: { docker: { image: `node:${cleanVer}` } },
+                  });
+                });
+              } else {
+                branches[defaultBranch][cronKey].push({
+                  alias: jobName,
+                  name: `crontab-${jobName}`,
+                });
+              }
             });
           }
         });
@@ -137,11 +163,11 @@ function App() {
 
       // 8) 输出 YAML
       if (useYamlAnchors) {
-        // (A) 使用锚点与别名，构造正确的 <<: *alias 语法
+        // (A) 使用锚点与别名，构造正确的 <<: *alias 语法，并在实例级合并 overrides（仅镜像）
         const yamlText = buildYamlWithAnchors(templates, branches);
         setCnbYaml(yamlText);
       } else {
-        // (B) 不使用锚点，直接把模板内容合并到实例（深拷贝）
+        // (B) 不使用锚点，直接把模板内容合并到实例（深拷贝 + overrides）
         const expanded = expandTemplates(templates, branches);
         setCnbYaml(yaml.dump(expanded));
       }
@@ -153,6 +179,7 @@ function App() {
 
   /**
    * 将模板+事件结构渲染为带锚点与别名的 YAML 字符串
+   * 支持在实例级追加 overrides（如 docker.image）
    */
   const buildYamlWithAnchors = (templates, branches) => {
     const parts = [];
@@ -179,6 +206,11 @@ function App() {
           parts.push('    -');
           parts.push(`      name: ${quoteIfNeeded(item.name)}`);
           parts.push(`      <<: *${item.alias}`);
+          if (item.overrides && Object.keys(item.overrides).length > 0) {
+            // 把 overrides 展到实例下（例如 docker.image）
+            const dumped = yaml.dump(item.overrides).trimEnd();
+            parts.push(indentBlock(dumped, 6));
+          }
         });
       });
     });
@@ -186,24 +218,27 @@ function App() {
     return parts.join('\n');
   };
 
-  /** 深度合并模板：把 alias 展开成完整对象（不使用锚点时用） */
+  /** 不使用锚点时，将 alias 展开成完整对象并应用 overrides */
   const expandTemplates = (templates, branches) => {
     const out = {};
     Object.entries(branches).forEach(([branch, events]) => {
       out[branch] = {};
       Object.entries(events).forEach(([eventKey, items]) => {
-        // crontab key 要保留原样（含空格与冒号）
-        out[branch][eventKey] = items.map(({ alias, name }) => {
-          const tpl = deepClone(templates[alias] || {});
-          return { name, ...tpl };
+        out[branch][eventKey] = items.map(({ alias, name, overrides }) => {
+          const base = deepClone(templates[alias] || {});
+          const merged = deepMerge(base, overrides || {});
+          return { name, ...merged };
         });
       });
     });
     return out;
   };
 
-  // Helper: 创建模板 Pipeline（符合 CNB 语法：pipeline.docker/env/stages/jobs/script）
-  const createPipelineFromJob = (jobName, jobConfig, globalEnv = {}) => {
+  // Helper: 创建模板 Pipeline（符合 CNB 语法：pipeline.docker/env/stages）
+  // 仅生成 stages，不再生成 jobs 级别
+  const createPipelineFromJob = (jobName, jobConfig, globalEnv = {}, options = {}) => {
+    const { stripDocker = false } = options;
+
     const pipeline = {
       env: Object.keys(globalEnv).length ? { ...globalEnv } : undefined,
       docker: undefined,
@@ -214,14 +249,13 @@ function App() {
     const runsOn = jobConfig?.runsOn || jobConfig?.['runs-on'];
     const mappedImage = mapRunnerToDockerImage(runsOn);
 
-    // 2) 将 steps 转换为一个 Stage，包含多个 Job（脚本任务）
-    // 将 GH steps 转为多个 stage（而不是一个 stage 多个 job）
+    // 2) 将 steps 转换为多个 Stage（每个 step = 一个 stage，直接含 script，不再嵌套 jobs）
     const stages = [];
 
-    // job 级 env（stage 级生效）
-    if (jobConfig && jobConfig.env && Object.keys(jobConfig.env).length > 0) {
-      // 每个 stage 都继承 job 级 env
-    }
+    // job 级 env（stage 级生效：每个 stage 继承 job env，再叠加 step env）
+    const jobLevelEnv = (jobConfig && jobConfig.env && Object.keys(jobConfig.env).length > 0)
+      ? { ...jobConfig.env }
+      : undefined;
 
     let imageFromSetupNode = undefined;
 
@@ -230,25 +264,25 @@ function App() {
         const taskName = step.name || `step-${index + 1}`;
         const stepEnv = step.env && Object.keys(step.env).length > 0 ? { ...step.env } : undefined;
 
-        // 新建一个 stage 对应这个 step（直接包含 script，不再嵌套 jobs）
-        const stage = {
-          name: taskName
-        };
-        if (jobConfig && jobConfig.env && Object.keys(jobConfig.env).length > 0) {
-          stage.env = { ...jobConfig.env };
+        // 新建一个 stage 对应这个 step
+        const stage = { name: taskName };
+
+        if (jobLevelEnv) {
+          stage.env = { ...jobLevelEnv };
         }
         if (stepEnv) {
           stage.env = { ...(stage.env || {}), ...stepEnv };
         }
 
         if (step.uses) {
+          // 常见 actions
           if (String(step.uses).startsWith('actions/checkout@')) {
             return; // 跳过
           }
           if (String(step.uses).startsWith('actions/setup-node@')) {
             const ver = step.with?.['node-version'] || step.with?.['node-version-file'] || '20';
             imageFromSetupNode = `node:${String(ver).replace(/^v/, '')}`;
-            return;
+            return; // 只用于推断镜像，不产生 stage
           }
           stage.script = `# 使用 GitHub Action: ${step.uses}\n# 请手动替换为等效 CNB 插件或脚本`;
           stages.push(stage);
@@ -257,21 +291,23 @@ function App() {
 
         if (step.run) {
           stage.script = String(step.run);
+        } else if (!stage.script) {
+          stage.script = '# no-op';
         }
 
         stages.push(stage);
       });
     }
 
-    // 如果 setup-node 指定了镜像优先使用，否则用 runs-on 映射
+    // docker.image：若 stripDocker=true（矩阵），则不在模板上设置 docker
     const finalImage = imageFromSetupNode || mappedImage;
-    if (finalImage) {
+    if (!stripDocker && finalImage) {
       pipeline.docker = { image: finalImage };
     }
 
-    // 没有 steps 的空任务，给个空脚本避免语法错误
+    // 没有 steps 的空任务，给个占位 stage 避免语法错误
     if (!stages.length) {
-      stages.push({ name: 'noop', jobs: [{ name: 'noop', script: 'echo "noop"' }] });
+      stages.push({ name: 'noop', script: 'echo "noop"' });
     }
 
     pipeline.stages.push(...stages);
@@ -318,6 +354,23 @@ function App() {
   };
 
   const deepClone = (obj) => JSON.parse(JSON.stringify(obj));
+
+  const deepMerge = (base, override) => {
+    if (!override || typeof override !== 'object') return base;
+    const out = deepClone(base);
+    const walk = (t, s) => {
+      Object.entries(s).forEach(([k, v]) => {
+        if (v && typeof v === 'object' && !Array.isArray(v)) {
+          t[k] = t[k] && typeof t[k] === 'object' && !Array.isArray(t[k]) ? t[k] : {};
+          walk(t[k], v);
+        } else {
+          t[k] = v;
+        }
+      });
+    };
+    walk(out, override);
+    return out;
+  };
 
   const quoteIfNeeded = (s) => {
     const str = String(s);
@@ -412,7 +465,20 @@ function App() {
               这种方式可以减少重复，使配置文件更加简洁。建议打开使用 YAML 锚点和别名简化配置选项。
             </p>
             <pre className="code-example">
-{`.pipeline: &pipeline  # 定义锚点\n  docker:\n    image: node:22\n  stages:\n    - name: install\n      script: npm install\n    - name: test\n      script: npm test\n\nmain:\n  pull_request:\n    - <<: *pipeline  # 使用别名引用\n  push:\n    - <<: *pipeline  # 使用别名引用`}
+{`.pipeline: &pipeline  # 定义锚点
+  docker:
+    image: node:22
+  stages:
+    - name: install
+      script: npm install
+    - name: test
+      script: npm test
+
+main:
+  pull_request:
+    - <<: *pipeline  # 使用别名引用
+  push:
+    - <<: *pipeline  # 使用别名引用`}
             </pre>
           </div>
         </div>
