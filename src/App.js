@@ -70,7 +70,7 @@ function App() {
       const triggerTypes = rawTriggerTypes.filter(t => t !== 'schedule');
 
       // 6) 生成模板（使用锚点时会被 <<: *alias 合并）
-      // 注意：对于“矩阵 node-version”的 job，模板中会**去掉 docker**，只保留 stages/env 等可复用部分
+      //    ——注意：矩阵 node-version 的 job，模板中**去掉 docker**，只保留可复用部分（env / stages 等）
       const templates = {}; // { [jobName]: pipelineTemplate }
 
       if (githubWorkflow.jobs) {
@@ -84,7 +84,7 @@ function App() {
             jobConfig,
             globalEnv,
             {
-              stripDocker: Boolean(isMatrixNode), // 矩阵下去掉 docker，实例里覆盖 image
+              stripDocker: Boolean(isMatrixNode), // 矩阵：模板不带 docker，实例再覆盖 image
             }
           );
 
@@ -95,7 +95,7 @@ function App() {
       }
 
       // 7) 根据事件生成流水线引用（每个事件下引用模板）
-      // 结构：{ branchKey: { eventKey: [ {alias, name, overrides?}, ... ] } }
+      //    结构：{ branchKey: { eventKey: [ { alias, name, overrides? }, ... ] } }
       const branches = { [defaultBranch]: {} };
 
       // 普通事件（push / pull_request / web_trigger / api_trigger ...）
@@ -106,14 +106,14 @@ function App() {
 
         if (githubWorkflow.jobs) {
           Object.entries(githubWorkflow.jobs).forEach(([jobName, jobConfig]) => {
-            // 矩阵 Node.js：用锚点复用除 image 外全部内容，在实例里覆盖 docker.image
+            // 针对 Node.js 矩阵构建：模板复用除 image 外所有内容，实例只覆盖 docker.image
             const nodeVers = jobConfig?.strategy?.matrix?.['node-version'];
             if (nodeVers) {
               const versions = Array.isArray(nodeVers) ? nodeVers : [nodeVers];
               versions.forEach(ver => {
-                const cleanVer = String(ver).endsWith('.x') ? String(ver).slice(0, -2) : String(ver).replace(/^v/, '');
+                const cleanVer = normalizeNodeVer(ver); // 去掉前导 v 与末尾 .x
                 branches[defaultBranch][eventKey].push({
-                  alias: jobName, // 复用基础模板
+                  alias: jobName, // 复用基础模板（不含 docker）
                   name: `${eventKey}-${jobName}-node${cleanVer}`,
                   overrides: { docker: { image: `node:${cleanVer}` } }, // 仅覆盖镜像
                 });
@@ -143,7 +143,7 @@ function App() {
               if (nodeVers) {
                 const versions = Array.isArray(nodeVers) ? nodeVers : [nodeVers];
                 versions.forEach(ver => {
-                  const cleanVer = String(ver).endsWith('.x') ? String(ver).slice(0, -2) : String(ver).replace(/^v/, '');
+                  const cleanVer = normalizeNodeVer(ver);
                   branches[defaultBranch][cronKey].push({
                     alias: jobName,
                     name: `crontab-${jobName}-node${cleanVer}`,
@@ -224,6 +224,7 @@ function App() {
     Object.entries(branches).forEach(([branch, events]) => {
       out[branch] = {};
       Object.entries(events).forEach(([eventKey, items]) => {
+        // crontab key 要保留原样（含空格与冒号）
         out[branch][eventKey] = items.map(({ alias, name, overrides }) => {
           const base = deepClone(templates[alias] || {});
           const merged = deepMerge(base, overrides || {});
@@ -264,7 +265,7 @@ function App() {
         const taskName = step.name || `step-${index + 1}`;
         const stepEnv = step.env && Object.keys(step.env).length > 0 ? { ...step.env } : undefined;
 
-        // 新建一个 stage 对应这个 step
+        // 新建一个 stage 对应这个 step（直接包含 script，不再嵌套 jobs）
         const stage = { name: taskName };
 
         if (jobLevelEnv) {
@@ -275,15 +276,16 @@ function App() {
         }
 
         if (step.uses) {
-          // 常见 actions
           if (String(step.uses).startsWith('actions/checkout@')) {
             return; // 跳过
           }
           if (String(step.uses).startsWith('actions/setup-node@')) {
+            // 统一处理 node-version：去掉前导 v 与末尾 .x，最终镜像如 node:18
             const ver = step.with?.['node-version'] || step.with?.['node-version-file'] || '20';
-            imageFromSetupNode = `node:${String(ver).replace(/^v/, '')}`;
+            imageFromSetupNode = `node:${normalizeNodeVer(ver)}`;
             return; // 只用于推断镜像，不产生 stage
           }
+          // 其他 uses：提示手动替换
           stage.script = `# 使用 GitHub Action: ${step.uses}\n# 请手动替换为等效 CNB 插件或脚本`;
           stages.push(stage);
           return;
@@ -299,7 +301,7 @@ function App() {
       });
     }
 
-    // docker.image：若 stripDocker=true（矩阵），则不在模板上设置 docker
+    // 如果 stripDocker=true（矩阵），则**不**在模板写 docker，留给实例覆盖；否则写入推断的镜像
     const finalImage = imageFromSetupNode || mappedImage;
     if (!stripDocker && finalImage) {
       pipeline.docker = { image: finalImage };
@@ -317,6 +319,14 @@ function App() {
     if (!pipeline.docker) delete pipeline.docker;
 
     return pipeline;
+  };
+
+  // 统一标准化 Node 版本：去前导 v、去末尾 .x（如 v18.x -> 18）
+  const normalizeNodeVer = (ver) => {
+    let v = String(ver).trim();
+    if (v.startsWith('v')) v = v.slice(1);
+    if (v.endsWith('.x')) v = v.slice(0, -2);
+    return v;
   };
 
   // GH Runner 到 CNB docker.image 的简单映射
