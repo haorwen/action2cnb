@@ -1,12 +1,20 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import './App.css';
 import yaml from 'js-yaml';
+import Editor from 'react-simple-code-editor';
+import { highlight, languages } from 'prismjs/components/prism-core';
+import 'prismjs/components/prism-clike';
+import 'prismjs/components/prism-yaml';
+import 'prismjs/themes/prism.css'; // Example theme
 
 function App() {
   const [githubYaml, setGithubYaml] = useState('');
   const [cnbYaml, setCnbYaml] = useState('');
   const [error, setError] = useState('');
   const [useYamlAnchors, setUseYamlAnchors] = useState(true);
+
+  const githubEditorRef = useRef(null);
+  const cnbEditorRef = useRef(null);
 
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
@@ -437,22 +445,46 @@ function App() {
           <div className="editors">
             <div className="editor-container">
               <h3>GitHub Actions Workflow</h3>
-              <textarea
-                value={githubYaml}
-                onChange={(e) => setGithubYaml(e.target.value)}
-                placeholder="上传你的github workflow文件或者直接在这里粘贴"
+              <div
+                ref={githubEditorRef}
                 className="code-editor"
-              />
+                onClick={() => githubEditorRef.current?.querySelector('textarea')?.focus()}
+              >
+                <Editor
+                  value={githubYaml}
+                  onValueChange={code => setGithubYaml(code)}
+                  highlight={code => highlight(code, languages.yaml, 'yaml')}
+                  padding={10}
+                  style={{
+                    fontFamily: '"Fira code", "Fira Mono", monospace',
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                  }}
+                  placeholder="上传你的github workflow文件或者直接在这里粘贴"
+                />
+              </div>
             </div>
 
             <div className="editor-container">
               <h3>CNB Workflow</h3>
-              <textarea
-                value={cnbYaml}
-                readOnly
-                placeholder="转换完的CNB流水线会在这里展示"
+              <div
+                ref={cnbEditorRef}
                 className="code-editor"
-              />
+                onClick={() => cnbEditorRef.current?.querySelector('textarea')?.focus()}
+              >
+                <Editor
+                  value={cnbYaml}
+                  onValueChange={code => setCnbYaml(code)}
+                  highlight={code => highlight(code, languages.yaml, 'yaml')}
+                  padding={10}
+                  style={{
+                    fontFamily: '"Fira code", "Fira Mono", monospace',
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                  }}
+                  placeholder="转换完的CNB流水线会在这里展示"
+                />
+              </div>
             </div>
           </div>
 

@@ -7,6 +7,9 @@ $:
         cpus: 8
       docker:
         image: docker.cnb.cool/dadong.cnb/cloud/os/ubuntu:25.04
+        volumes:
+          - /workspace/.pnpm-store
+          - /workspace/node_modules
       services:
         - vscode
         - docker
@@ -24,6 +27,9 @@ $:
         cpus: 32
       docker:
         image: node:20-alpine
+        volumes:
+          - /workspace/.pnpm-store
+          - /workspace/node_modules
       stages:
         - name: 安装pnpm
           script:

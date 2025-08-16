@@ -140,18 +140,15 @@
   color: #24292e;
 }
 
+/* This styles the wrapper div to have a fixed height and its own scrollbar */
 .code-editor {
-  height: 400px;
-  padding: 1rem;
-  font-family: monospace;
+  height: 400px; /* A fixed height is essential for the container */
   border: 1px solid #d1d5da;
   border-radius: 4px;
   background-color: white;
-  resize: vertical;
-  text-align: left;
-  font-size: 0.9rem;
-  line-height: 1.4;
-  overflow: auto;
+  resize: vertical; /* Allow the user to resize the editor's height */
+  overflow-y: auto; /* Show a scrollbar ONLY when content overflows the height */
+  padding: 0; /* Padding is handled by the Editor component's prop */
 }
 
 .error-message {
