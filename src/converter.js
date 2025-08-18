@@ -47,7 +47,10 @@ class WorkflowConverter {
           : triggerOn ? Object.keys(triggerOn) : [];
       const triggerTypes = rawTriggerTypes.filter(t => t !== 'schedule');
 
-      // 5) 生成模板（使用锚点时会被 <<: *alias 合并）
+      // 5) 分析依赖关系
+      const dependencyGraph = this.buildDependencyGraph(githubWorkflow.jobs || {});
+
+      // 6) 生成模板（使用锚点时会被 <<: *alias 合并）
       //    ——注意：矩阵 node-version 的 job，模板中**去掉 docker**，只保留可复用部分（env / stages 等）
       const templates = {}; // { [jobName]: pipelineTemplate }
 
@@ -61,6 +64,7 @@ class WorkflowConverter {
             jobName,
             jobConfig,
             globalEnv,
+            dependencyGraph,
             {
               stripDocker: Boolean(isMatrixNode), // 矩阵：模板不带 docker，实例再覆盖 image
             }
@@ -144,9 +148,9 @@ class WorkflowConverter {
         // (A) 使用锚点与别名，构造正确的 <<: *alias 语法，并在实例级合并 overrides（仅镜像）
         return this.buildYamlWithAnchors(templates, branches);
       } else {
-        // (B) 不使用锚点，直接把模板内容合并到实例（深拷贝 + overrides）
-        const expanded = this.expandTemplates(templates, branches);
-        return yaml.dump(expanded);
+        // (B) 先生成锚点版本，然后展开锚点为完整内容
+        const anchoredYaml = this.buildYamlWithAnchors(templates, branches);
+        return this.expandAnchorsToFullYaml(anchoredYaml);
       }
     } catch (err) {
       throw new Error(`Error converting workflow: ${err.message}`);
@@ -194,26 +198,102 @@ class WorkflowConverter {
     return parts.join('\n');
   }
 
-  /** 不使用锚点时，将 alias 展开成完整对象并应用 overrides */
-  expandTemplates(templates, branches) {
-    const out = {};
-    Object.entries(branches).forEach(([branch, events]) => {
-      out[branch] = {};
-      Object.entries(events).forEach(([eventKey, items]) => {
-        // crontab key 要保留原样（含空格与冒号）
-        out[branch][eventKey] = items.map(({ alias, name, overrides }) => {
-          const base = this.deepClone(templates[alias] || {});
-          const merged = this.deepMerge(base, overrides || {});
-          return { name, ...merged };
-        });
+  /**
+   * 将带锚点的YAML字符串展开为完整的内联版本
+   * @param {string} anchoredYaml - 带锚点的YAML字符串
+   * @returns {string} - 展开后的完整YAML字符串
+   */
+  expandAnchorsToFullYaml(anchoredYaml) {
+    try {
+      // 解析带锚点的YAML
+      const parsed = yaml.load(anchoredYaml);
+      
+      // 提取所有锚点模板（以 . 开头的键）
+      const anchors = {};
+      const result = {};
+      
+      Object.entries(parsed).forEach(([key, value]) => {
+        if (key.startsWith('.')) {
+          // 这是锚点定义，存储起来
+          const anchorName = key.slice(1); // 去掉前缀的 .
+          anchors[anchorName] = value;
+        } else {
+          // 这是正常的分支配置
+          result[key] = value;
+        }
+      });
+      
+      // 递归展开所有锚点引用
+      const expandValue = (value) => {
+        if (Array.isArray(value)) {
+          return value.map(expandValue);
+        } else if (value && typeof value === 'object') {
+          const expanded = {};
+          
+          // 处理 <<: *anchor 合并语法
+          if (value['<<'] && typeof value['<<'] === 'string') {
+            const anchorRef = value['<<'];
+            if (anchorRef.startsWith('*')) {
+              const anchorName = anchorRef.slice(1);
+              if (anchors[anchorName]) {
+                // 先展开锚点内容
+                const anchorContent = expandValue(anchors[anchorName]);
+                Object.assign(expanded, anchorContent);
+              }
+            }
+          }
+          
+          // 处理其他属性
+          Object.entries(value).forEach(([k, v]) => {
+            if (k !== '<<') {
+              expanded[k] = expandValue(v);
+            }
+          });
+          
+          return expanded;
+        }
+        return value;
+      };
+      
+      const expandedResult = expandValue(result);
+      return yaml.dump(expandedResult);
+    } catch (err) {
+      throw new Error(`Error expanding anchors: ${err.message}`);
+    }
+  }
+
+  /**
+   * 构建依赖关系图
+   * @param {Object} jobs - GitHub Actions jobs 对象
+   * @returns {Object} - 依赖关系图 { jobName: { needs: [...], dependents: [...] } }
+   */
+  buildDependencyGraph(jobs) {
+    const graph = {};
+    
+    // 初始化图节点
+    Object.keys(jobs).forEach(jobName => {
+      graph[jobName] = { needs: [], dependents: [] };
+    });
+
+    // 构建依赖关系
+    Object.entries(jobs).forEach(([jobName, jobConfig]) => {
+      const needs = jobConfig.needs || [];
+      const needsList = Array.isArray(needs) ? needs : [needs];
+      
+      needsList.forEach(dependency => {
+        if (typeof dependency === 'string' && graph[dependency]) {
+          graph[jobName].needs.push(dependency);
+          graph[dependency].dependents.push(jobName);
+        }
       });
     });
-    return out;
+
+    return graph;
   }
 
   // Helper: 创建模板 Pipeline（符合 CNB 语法：pipeline.docker/env/stages）
   // 仅生成 stages，不再生成 jobs 级别
-  createPipelineFromJob(jobName, jobConfig, globalEnv = {}, options = {}) {
+  createPipelineFromJob(jobName, jobConfig, globalEnv = {}, dependencyGraph = {}, options = {}) {
     const { stripDocker = false } = options;
 
     const pipeline = {
@@ -226,9 +306,21 @@ class WorkflowConverter {
     const runsOn = jobConfig?.runsOn || jobConfig?.['runs-on'];
     const mappedImage = this.mapRunnerToDockerImage(runsOn);
 
-    // 2) 将 steps 转换为多个 Stage（每个 step = 一个 stage，直接含 script，不再嵌套 jobs）
+    // 2) 添加依赖等待 stages（cnb:await）
     const stages = [];
+    const jobDependencies = dependencyGraph[jobName]?.needs || [];
+    
+    jobDependencies.forEach(dependency => {
+      stages.push({
+        name: `wait for ${dependency}`,
+        type: 'cnb:await',
+        options: {
+          key: dependency
+        }
+      });
+    });
 
+    // 3) 将 steps 转换为多个 Stage（每个 step = 一个 stage，直接含 script，不再嵌套 jobs）
     // job 级 env（stage 级生效：每个 stage 继承 job env，再叠加 step env）
     const jobLevelEnv = (jobConfig && jobConfig.env && Object.keys(jobConfig.env).length > 0)
       ? { ...jobConfig.env }
@@ -274,6 +366,19 @@ class WorkflowConverter {
         }
 
         stages.push(stage);
+      });
+    }
+
+    // 4) 添加完成信号 stage（cnb:resolve）
+    // 只有当有其他 job 依赖于当前 job 时才添加 resolve stage
+    const hasDependents = dependencyGraph[jobName]?.dependents?.length > 0;
+    if (hasDependents) {
+      stages.push({
+        name: `resolve for ${jobName}`,
+        type: 'cnb:resolve',
+        options: {
+          key: jobName
+        }
       });
     }
 
