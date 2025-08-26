@@ -16,6 +16,8 @@ function App() {
   const [optimizedYaml, setOptimizedYaml] = useState('');
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [optimizeError, setOptimizeError] = useState('');
+  const [hasOptimized, setHasOptimized] = useState(false);
+  const [lastOptimizedWorkflow, setLastOptimizedWorkflow] = useState(null);
 
   const githubEditorRef = useRef(null);
   const cnbEditorRef = useRef(null);
@@ -44,12 +46,19 @@ function App() {
 
   const convertToCNB = () => {
     setError('');
-    setCnbYaml('');
-    setOptimizedYaml('');
     setOptimizeError('');
 
     try {
       const result = converter.convertToCNB(githubYaml, useYamlAnchors);
+
+      // Only clear the optimization if the underlying cnb.yml has actually changed.
+      // This preserves the optimized result if the conversion is idempotent.
+      if (result !== cnbYaml) {
+        setOptimizedYaml('');
+        setHasOptimized(false);
+        setLastOptimizedWorkflow(null);
+      }
+
       setCnbYaml(result);
     } catch (err) {
       setError(err.message);
@@ -80,7 +89,12 @@ function App() {
       // Extract content from the markdown code block after stream ends
       const match = finalContent.match(/```(?:yaml\n)?([\s\S]*?)```/);
       if (match && match[1]) {
-        setOptimizedYaml(match[1].trim());
+        const optimizedContent = match[1].trim();
+        setOptimizedYaml(optimizedContent);
+        if (optimizedContent) {
+          setHasOptimized(true);
+          setLastOptimizedWorkflow(githubYaml); // Store the workflow that was just optimized
+        }
       }
       setIsOptimizing(false);
     }
@@ -143,7 +157,14 @@ function App() {
               >
                 <Editor
                   value={githubYaml}
-                  onValueChange={code => setGithubYaml(code)}
+                  onValueChange={code => {
+                    setGithubYaml(code);
+                    // When source changes, all derived data is invalid
+                    setCnbYaml('');
+                    setOptimizedYaml('');
+                    setHasOptimized(false);
+                    setLastOptimizedWorkflow(null);
+                  }}
                   highlight={code => highlight(code, languages.yaml, 'yaml')}
                   padding={10}
                   style={{
@@ -188,8 +209,8 @@ function App() {
               >
                 Download CNB Workflow
               </a>
-              <button onClick={handleAiOptimize} className="optimize-button" disabled={!cnbYaml || isOptimizing}>
-                {isOptimizing ? '正在优化...' : 'AI 优化 (Beta)'}
+              <button onClick={handleAiOptimize} className="optimize-button" disabled={!cnbYaml || isOptimizing || (hasOptimized && githubYaml === lastOptimizedWorkflow)}>
+                {isOptimizing ? '正在优化...' : (hasOptimized && githubYaml === lastOptimizedWorkflow) ? '已优化' : 'AI 优化 (Beta)'}
               </button>
             </div>
           )}

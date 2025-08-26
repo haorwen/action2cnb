@@ -2,8 +2,8 @@ import OpenAI from 'openai';
 
 // NOTE: Do not commit tokens and keys to version control.
 // Use environment variables or other secure methods in production.
-const OPENAI_API_KEY = 'sk-LvNePcY5Vvi3tXiHqLaxiw3EWAZdJrp9hfBTGWq4QSVNzZlZ'; // Replace with your OpenAI API key
-const OPENAI_BASE_URL = 'https://newapi.haorwen.top/v1'; // Or your proxy address
+const OPENAI_API_KEY = 'sk-cnb-ai-key'; // Replace with your OpenAI API key
+const OPENAI_BASE_URL = 'https://action2cnb-ai.haorwen.top/v1'; // Or your proxy address
 
 // Initialize OpenAI client
 const openai = new OpenAI({
