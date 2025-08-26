@@ -122,7 +122,7 @@
 
 .editors {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
   gap: 2rem;
   margin-bottom: 2rem;
 }
@@ -178,6 +178,44 @@
 
 .download-button:hover {
   background-color: #0a59c0;
+}
+
+.optimize-button {
+  padding: 0.75rem 1.5rem;
+  background-color: #6f42c1; /* A nice purple for beta feature */
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  margin-left: 1rem;
+  text-decoration: none;
+  display: inline-block;
+}
+
+.optimize-button:hover {
+  background-color: #5a32a3;
+}
+
+.optimize-button:disabled {
+  background-color: #b39ddb;
+  cursor: not-allowed;
+}
+
+.loading-message {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  background-color: #e6f7ff;
+  border: 1px solid #91d5ff;
+  color: #0050b3;
+  border-radius: 4px;
+  text-align: center;
+}
+
+.optimized-container {
+  margin-top: 2rem;
+  grid-column: 1 / -1; /* Span full width */
 }
 
 .info-section {

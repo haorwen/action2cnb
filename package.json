@@ -1,6 +1,6 @@
 {
   "name": "github-to-cnb-converter",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "dependencies": {
     "@testing-library/dom": "^10.4.0",
@@ -8,6 +8,7 @@
     "@testing-library/react": "^16.3.0",
     "@testing-library/user-event": "^13.5.0",
     "js-yaml": "^4.1.0",
+    "openai": "^5.15.0",
     "prismjs": "^1.30.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

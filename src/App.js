@@ -6,12 +6,16 @@ import 'prismjs/components/prism-clike';
 import 'prismjs/components/prism-yaml';
 import 'prismjs/themes/prism.css'; // Example theme
 import converter from './converter';
+import { optimizeWithAI } from './ai-optimizer';
 
 function App() {
   const [githubYaml, setGithubYaml] = useState('');
   const [cnbYaml, setCnbYaml] = useState('');
   const [error, setError] = useState('');
   const [useYamlAnchors, setUseYamlAnchors] = useState(true);
+  const [optimizedYaml, setOptimizedYaml] = useState('');
+  const [isOptimizing, setIsOptimizing] = useState(false);
+  const [optimizeError, setOptimizeError] = useState('');
 
   const githubEditorRef = useRef(null);
   const cnbEditorRef = useRef(null);
@@ -41,6 +45,8 @@ function App() {
   const convertToCNB = () => {
     setError('');
     setCnbYaml('');
+    setOptimizedYaml('');
+    setOptimizeError('');
 
     try {
       const result = converter.convertToCNB(githubYaml, useYamlAnchors);
@@ -48,6 +54,35 @@ function App() {
     } catch (err) {
       setError(err.message);
       console.error(err);
+    }
+  };
+
+  const handleAiOptimize = async () => {
+    setOptimizeError('');
+    setOptimizedYaml('');
+    setIsOptimizing(true);
+    let finalContent = '';
+  
+    try {
+      const stream = await optimizeWithAI(githubYaml, cnbYaml);
+      // console.log("Stream started...");
+      for await (const chunk of stream) {
+        // console.log("Received chunk:", chunk); // Log each received chunk
+        const token = chunk.choices[0]?.delta?.content || '';
+        finalContent += token;
+        setOptimizedYaml(finalContent);
+      }
+      console.log("Stream finished.");
+    } catch (err) {
+      setOptimizeError(err.message);
+      console.error(err);
+    } finally {
+      // Extract content from the markdown code block after stream ends
+      const match = finalContent.match(/```(?:yaml\n)?([\s\S]*?)```/);
+      if (match && match[1]) {
+        setOptimizedYaml(match[1].trim());
+      }
+      setIsOptimizing(false);
     }
   };
 
@@ -153,6 +188,33 @@ function App() {
               >
                 Download CNB Workflow
               </a>
+              <button onClick={handleAiOptimize} className="optimize-button" disabled={!cnbYaml || isOptimizing}>
+                {isOptimizing ? '正在优化...' : 'AI 优化 (Beta)'}
+              </button>
+            </div>
+          )}
+
+          {optimizeError && <div className="error-message">{optimizeError}</div>}
+          {isOptimizing && <div className="loading-message">AI 正在思考中，请稍候...</div>}
+
+          {optimizedYaml && (
+            <div className="editor-container optimized-container">
+              <h3>AI 优化后的 CNB Workflow</h3>
+              <div className="code-editor">
+                <Editor
+                  value={optimizedYaml}
+                  onValueChange={code => setOptimizedYaml(code)}
+                  highlight={code => highlight(code, languages.yaml, 'yaml')}
+                  padding={10}
+                  style={{
+                    fontFamily: '"Fira code", "Fira Mono", monospace',
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                    backgroundColor: '#f0f8ff'
+                  }}
+                  readOnly
+                />
+              </div>
             </div>
           )}
 
@@ -186,3 +248,4 @@ main:
 }
 
 export default App;
+
