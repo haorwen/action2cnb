@@ -35,10 +35,8 @@ export async function optimizeWithAI(originalWorkflow, convertedWorkflow) {
 
 Here is the knowledge base for your reference:
 
-### CNB Workflow Grammar
 ${grammarText}
 
-### Migration Guide from GitHub Actions
 ${migrateText}
 `;
 
@@ -52,7 +50,7 @@ ${migrateText}
         },
         {
           role: "user",
-          content: `请根据上面信息，优化转换后的 CNB 工作流。
+          content: `请根据上面信息，完善转换后的 CNB 工作流。
 
 ### 原始 GitHub Actions 工作流:
 \`\`\`yaml
@@ -64,7 +62,7 @@ ${originalWorkflow}
 ${convertedWorkflow}
 \`\`\`
 
-请优化“转换后的 CNB 工作流”，使其更简洁、高效，并符合最佳实践。返回优化后的完整 YAML 内容，并仅使用代码块包裹。注意语法上的差异，比如你不能使用github上的任何插件`,
+请完善“转换后的 CNB 工作流”，使其更简洁、高效，但是原workflow没有的，不要添加，比如原workflow没有缓存，那你也不能加。返回完善后的使用锚点的 YAML 内容，并仅使用代码块包裹。`,
         },
       ],
       temperature: 0.2, // Lower temperature for more deterministic output
