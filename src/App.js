@@ -108,7 +108,7 @@ function App() {
   <img src="https://www.netlify.com/assets/badges/netlify-badge-color-accent.svg" alt="Deploys by Netlify" />
 </a>
         <a
-          href="https://cnb.cool/haorwen/action2cnb"
+          href="https://github.com/haorwen/action2cnb"
           className="repo-link"
           target="_blank"
           rel="noopener noreferrer"
