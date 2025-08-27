@@ -104,6 +104,7 @@ function App() {
     <div className="App">
       <header className="App-header">
         <h1>GitHub Actions to CNB Converter</h1>
+        <a href="https://app.netlify.com/" target="_blank">This page is deployed on netlify</a>
         <a
           href="https://cnb.cool/haorwen/action2cnb"
           className="repo-link"
